@@ -1,0 +1,54 @@
+{
+  "name": "certificate-sharing",
+  "version": "1.0.0",
+  "description": "Script otomatis untuk berbagi akses sertifikat di Google Drive",
+  "main": "monitor.js",
+  "bin": {
+    "certificate-monitor": "./monitor.js"
+  },
+  "scripts": {
+    "start": "node monitor.js",
+    "monitor": "node monitor.js",
+    "dev": "node monitor.js",
+    "build:mac": "pkg monitor.js --targets node18-macos-x64 --output certificate-monitor-mac",
+    "package:mac": "bash scripts/package-mac.sh"
+  },
+  "keywords": [
+    "google-drive",
+    "google-sheets",
+    "certificate",
+    "automation",
+    "cli"
+  ],
+  "author": "Freelance Script",
+  "license": "MIT",
+  "dependencies": {
+    "chalk": "^4.1.2",
+    "cli-progress": "^3.12.0",
+    "conf": "^10.2.0",
+    "figlet": "^1.7.0",
+    "googleapis": "^128.0.0",
+    "inquirer": "^8.2.6",
+    "ora": "^5.4.1"
+  },
+  "devDependencies": {
+    "bytenode": "^1.5.7",
+    "javascript-obfuscator": "^4.1.1",
+    "pkg": "^5.8.1"
+  },
+  "pkg": {
+    "scripts": "index.js",
+    "assets": [
+      "node_modules/googleapis/build/**/*",
+      "node_modules/figlet/fonts/**/*"
+    ],
+    "targets": [
+      "node18-macos-x64",
+      "node18-win-x64",
+      "node18-linux-x64"
+    ]
+  },
+  "engines": {
+    "node": ">=14.0.0"
+  }
+}
