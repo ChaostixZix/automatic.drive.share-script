@@ -9,6 +9,7 @@ const chalk = require('chalk');
 const ora = require('ora');
 const cliProgress = require('cli-progress');
 const Conf = require('conf');
+const os = require('os');
 
 // Configuration storage  
 const config = new Conf({
@@ -34,6 +35,9 @@ class CertificateSharing {
     this.debugEnabled = process.env.DEBUG === 'true' || process.env.DEBUG_SHARE === 'true';
     this.logStream = null;
     this.logFilePath = null;
+    // Sharding config (untuk multi-worker aman tanpa overlap)
+    this.shardTotal = Number(process.env.SHARD_TOTAL || 0) || 0;
+    this.shardIndex = Number(process.env.SHARD_INDEX || 0) || 0;
   }
 
   // Initialize local file logger
@@ -64,6 +68,18 @@ class CertificateSharing {
   // Utility: sleep with optional jitter
   async sleep(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  // Utility: simple stable hash (djb2)
+  hashKey(str) {
+    const s = (str || '').toString();
+    let hash = 5381;
+    for (let i = 0; i < s.length; i++) {
+      hash = ((hash << 5) + hash) + s.charCodeAt(i);
+      hash = hash | 0; // force 32-bit
+    }
+    // Convert to unsigned 32-bit
+    return hash >>> 0;
   }
 
   // Sleep with countdown display
@@ -467,12 +483,14 @@ class CertificateSharing {
   async findFolderByName(name, parentFolderId = null) {
     // Fixed recursive search depth = 3
     const targetName = (name || '').toString();
+    const targetLower = targetName.toLowerCase();
     if (!targetName) return null;
 
     // If no parent specified, fall back to global search by name
     if (!parentFolderId) {
       try {
-        let query = `mimeType='application/vnd.google-apps.folder' and name='${targetName.replace(/'/g, "\\'")}' and trashed=false`;
+        // Case-insensitive approach: use contains, then filter by exact (lowercase) match
+        let query = `mimeType='application/vnd.google-apps.folder' and name contains '${targetName.replace(/'/g, "\\'")}' and trashed=false`;
         let attempt = 0;
         const maxAttempts = 5;
         while (true) {
@@ -486,7 +504,7 @@ class CertificateSharing {
               supportsAllDrives: true,
               pageSize: 10
             });
-            const files = response.data.files;
+            const files = (response.data.files || []).filter(f => (f.name || '').toLowerCase() === targetLower);
             return files && files.length > 0 ? files[0].id : null;
           } catch (err) {
             this.dlog('files.list(global) error:', this.formatErrorSummary(err));
@@ -535,8 +553,8 @@ class CertificateSharing {
       if (current.depth > maxDepth) continue;
       try {
         const children = await listSubfolders(current.id);
-        // Check match on this level
-        const hit = children.find(f => f.name === targetName);
+        // Check match on this level (case-insensitive)
+        const hit = children.find(f => (f.name || '').toLowerCase() === targetLower);
         if (hit) return hit.id;
         // Enqueue next level
         if (current.depth < maxDepth) {
@@ -669,7 +687,8 @@ class CertificateSharing {
     const role = 'reader';
     const dryRun = config.get('dryRun');
     const throttleMs = Number(config.get('throttleMs')) || 2500;
-    const maxPerRun = Number(config.get('maxPerRun')) || 300;
+    const envMax = process.env.MAX_PER_RUN ? Number(process.env.MAX_PER_RUN) : undefined;
+    const maxPerRun = (Number.isFinite(envMax) && envMax > 0) ? envMax : (Number(config.get('maxPerRun')) || 300);
 
     console.log();
     console.log(chalk.blue('🔄 MEMPROSES PESERTA'));
@@ -677,6 +696,9 @@ class CertificateSharing {
     console.log(chalk.cyan(`📁 Parent Folder: ${parentFolderId || 'All folders'}`));
     console.log(chalk.cyan(`🔗 Role: ${role}`));
     console.log(chalk.cyan(`🎯 Mode: ${dryRun ? 'Simulasi' : 'Production'}`));
+    if (this.shardTotal > 0) {
+      console.log(chalk.cyan(`🧩 Shard: ${this.shardIndex + 1}/${this.shardTotal}`));
+    }
     console.log();
 
     if (dryRun) {
@@ -696,11 +718,26 @@ class CertificateSharing {
 
     let stats = { total: 0, done: 0, skipped: 0, errors: 0 };
     // Normalize and prepare list
-    const normalized = participants.map(p => ({
+    let normalized = participants.map(p => ({
       ...p,
       nama: (p.nama || '').toString().trim(),
       email: (p.email || '').toString().trim().toLowerCase()
     })).filter(p => p.nama && p.email);
+
+    // Hanya proses yang belum dishare (case-insensitive)
+    normalized = normalized.filter(p => String(p.isShared || '').toLowerCase() !== 'true');
+
+    // Terapkan sharding (hindari overlap folder/permission antar worker)
+    if (this.shardTotal > 0) {
+      const before = normalized.length;
+      normalized = normalized.filter(p => {
+        // Kunci shard: utamakan FolderId (case-sensitive), fallback Nama (lowercase)
+        const key = p.folderId ? String(p.folderId) : String(p.nama).toLowerCase();
+        const h = this.hashKey(key);
+        return (h % this.shardTotal) === this.shardIndex;
+      });
+      this.writeLog(`Sharding applied: ${normalized.length}/${before} records for shard ${this.shardIndex}/${this.shardTotal - 1}`);
+    }
 
     // Apply batch limit
     const workingParticipants = normalized.slice(0, maxPerRun);

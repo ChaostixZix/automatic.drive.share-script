@@ -3,6 +3,9 @@ node_modules/
 npm-debug.log*
 package-lock.json
 
+#gaperlu build
+build/
+
 # Environment files
 service.json
 service-account.json
